@@ -6,6 +6,7 @@ import { agentApi, taskApi } from '../../api';
 import { TaskResponse, TaskResult } from '../../types/task';
 import Button from '../../components/Button';
 import StatusBadge from '../../components/StatusBadge';
+import { logger } from '../../utils/logger';
 
 export default function TaskDetail(): React.ReactElement {
   const router = useRouter();
@@ -29,7 +30,7 @@ export default function TaskDetail(): React.ReactElement {
         setTask(data);
         setError(null);
       } catch (err) {
-        console.error('Error fetching task:', err);
+        logger.error('Error fetching task:', err);
         setError('Failed to load task data');
       } finally {
         setLoading(false);
@@ -55,11 +56,14 @@ export default function TaskDetail(): React.ReactElement {
       try {
         await taskApi.cancelTask(id);
         
-        // Refetch task to update status
-        const updatedTask = await taskApi.getTask(id);
-        setTask(updatedTask);
+        if (task) {
+          setTask({
+            ...task,
+            status: 'cancelled'
+          });
+        }
       } catch (err) {
-        console.error('Error cancelling task:', err);
+        logger.error('Error cancelling task:', err);
         alert('Failed to cancel task');
       }
     }

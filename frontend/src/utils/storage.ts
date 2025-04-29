@@ -1,3 +1,5 @@
+import { logger } from './logger';
+
 export const getItem = <T>(key: string, defaultValue: T): T => {
   if (typeof window === 'undefined') return defaultValue;
   
@@ -21,7 +23,7 @@ export const setItem = <T>(key: string, value: T): void => {
     const serializedValue = JSON.stringify(value);
     window.localStorage.setItem(key, serializedValue);
   } catch (err) {
-    console.error('Error saving to localStorage:', err);
+    logger.error('Error saving to localStorage:', err);
   }
 };
 

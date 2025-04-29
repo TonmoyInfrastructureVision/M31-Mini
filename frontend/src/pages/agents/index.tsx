@@ -5,6 +5,7 @@ import { agentApi } from '../../api';
 import { Agent } from '../../types/agent';
 import StatusBadge from '../../components/StatusBadge';
 import Button from '../../components/Button';
+import { logger } from '../../utils/logger';
 
 export default function AgentsList(): React.ReactElement {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -17,10 +18,9 @@ export default function AgentsList(): React.ReactElement {
         setLoading(true);
         const data = await agentApi.getAgents();
         setAgents(data.agents);
-        setError(null);
       } catch (err) {
+        logger.error('Error fetching agents:', err);
         setError('Failed to load agents');
-        console.error('Error fetching agents:', err);
       } finally {
         setLoading(false);
       }
@@ -35,7 +35,7 @@ export default function AgentsList(): React.ReactElement {
         await agentApi.deleteAgent(id);
         setAgents(agents.filter(agent => agent.id !== id));
       } catch (err) {
-        console.error('Error deleting agent:', err);
+        logger.error('Error deleting agent:', err);
         alert('Failed to delete agent');
       }
     }
