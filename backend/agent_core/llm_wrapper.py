@@ -1,12 +1,18 @@
 import logging
 import time
+import json
 from typing import Dict, List, Optional, Any, Union, Literal
 from functools import wraps
 
 import openai
-from anthropic import Anthropic
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+# Try to import tenacity, but provide fallback if not available
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+    HAS_TENACITY = True
+except ImportError:
+    HAS_TENACITY = False
 
+from anthropic import Anthropic
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -96,13 +102,112 @@ class LLMWrapper:
         self.anthropic_client = None
         if settings.llm.anthropic_api_key:
             self.anthropic_client = Anthropic(api_key=settings.llm.anthropic_api_key)
+    
+    # Use tenacity if available, otherwise just use the decorated function        
+    def _get_decorated_function(self, func):
+        if HAS_TENACITY:
+            return retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                retry=retry_if_exception_type((openai.APIError, openai.APIConnectionError)),
+                reraise=True,
+            )(func)
+        return func
+    
+    @handle_llm_errors
+    async def generate_json(
+        self,
+        messages: List[Union[Message, Dict[str, str]]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate a JSON response by asking the LLM to return JSON."""
+        # Convert dict messages to Message objects if needed
+        formatted_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                formatted_messages.append(Message(
+                    role=msg.get("role", "user"),
+                    content=msg.get("content", "")
+                ))
+            else:
+                formatted_messages.append(msg)
+                
+        # Add a system message to ensure JSON output if not already present
+        has_system_msg = any(msg.role == "system" for msg in formatted_messages)
+        if not has_system_msg:
+            formatted_messages.insert(0, Message(
+                role="system",
+                content="You are a helpful assistant that responds only with valid JSON."
+            ))
+        else:
+            # Update existing system message
+            for i, msg in enumerate(formatted_messages):
+                if msg.role == "system":
+                    formatted_messages[i] = Message(
+                        role="system",
+                        content=msg.content + "\nYour response MUST be valid JSON without any additional text."
+                    )
+                    break
+
+        # Generate the response
+        response = await self.generate(
+            messages=formatted_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+        )
+        
+        # Parse the JSON response
+        try:
+            # Clean the content to extract just the JSON
+            content = response.content.strip()
             
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((openai.APIError, openai.APIConnectionError)),
-        reraise=True,
-    )
+            # Remove markdown code blocks if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+                
+            content = content.strip()
+            
+            result = json.loads(content)
+            return result
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {e}, content: {response.content}")
+            raise LLMError(f"Failed to parse JSON response: {e}")
+
+    @handle_llm_errors
+    async def generate_text(
+        self,
+        messages: List[Union[Message, Dict[str, str]]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+    ) -> LLMResponse:
+        """Generate a text response from the LLM."""
+        # Convert dict messages to Message objects if needed
+        formatted_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                formatted_messages.append(Message(
+                    role=msg.get("role", "user"),
+                    content=msg.get("content", "")
+                ))
+            else:
+                formatted_messages.append(msg)
+        
+        # Generate the response
+        return await self.generate(
+            messages=formatted_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+        )
+    
     @handle_llm_errors
     async def generate(
         self,
@@ -233,6 +338,6 @@ class LLMWrapper:
             logger.error(f"Error in Anthropic API call: {str(e)}")
             raise
 
-
-# Create singleton instance
+# Create default instance with decorator
 llm = LLMWrapper()
+default_llm = llm

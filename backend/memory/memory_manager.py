@@ -60,6 +60,18 @@ class MemoryManager:
             logger.error(f"Error adding memory: {str(e)}")
             raise
     
+    # For compatibility with the old implementation
+    async def add_long_term_memory(
+        self, agent_id: str, text: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        return await self.add_memory(agent_id, text, metadata, memory_type="long_term")
+        
+    # For compatibility with the old implementation
+    async def search_long_term_memory(
+        self, agent_id: str, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        return await self.search_memory(agent_id, query, limit, "long_term")
+    
     async def search_memory(
         self,
         agent_id: str,
@@ -199,26 +211,26 @@ class MemoryManager:
                 "state": None,
             }
             
-            # Get state
-            state = await self.short_term.get_agent_state(agent_id)
-            if state:
-                result["state"] = state
-            
             # Get short-term memories
-            st_memories = await self.short_term.get_agent_memories(
-                agent_id=agent_id,
-                limit=max_short_term
-            )
-            result["short_term"] = st_memories
+            if max_short_term > 0:
+                short_term = await self.short_term.get_agent_memories(
+                    agent_id=agent_id,
+                    limit=max_short_term
+                )
+                result["short_term"] = short_term
             
-            # Get long-term memories if query is provided
-            if query:
-                lt_memories = await self.long_term.search_memory(
+            # Get relevant long-term memories if query provided
+            if query and max_long_term > 0:
+                long_term = await self.long_term.search_memory(
                     agent_id=agent_id,
                     query=query,
                     limit=max_long_term
                 )
-                result["long_term"] = lt_memories
+                result["long_term"] = long_term
+            
+            # Get current agent state
+            state = await self.short_term.get_agent_state(agent_id)
+            result["state"] = state
             
             return result
         except Exception as e:
@@ -229,12 +241,43 @@ class MemoryManager:
         self,
         agent_id: str,
         state: Dict[str, Any],
+        ttl: Optional[int] = None,
     ) -> bool:
         try:
-            return await self.short_term.store_agent_state(agent_id, state)
+            success = await self.short_term.set_agent_state(agent_id, state, ttl)
+            
+            if success:
+                logger.debug(f"Stored state for agent {agent_id}")
+            else:
+                logger.warning(f"Failed to store state for agent {agent_id}")
+                
+            return success
         except Exception as e:
             logger.error(f"Error storing agent state: {str(e)}")
             return False
+            
+    # For compatibility with the old implementation
+    async def save_agent_state(
+        self, agent_id: str, state: Dict[str, Any], ttl: Optional[int] = None
+    ) -> bool:
+        return await self.store_agent_state(agent_id, state, ttl)
+        
+    # For compatibility with the old implementation
+    async def update_agent_state(
+        self, agent_id: str, updates: Dict[str, Any], ttl: Optional[int] = None
+    ) -> bool:
+        # Get current state
+        current_state = await self.short_term.get_agent_state(agent_id)
+        if not current_state:
+            return await self.store_agent_state(agent_id, updates, ttl)
+            
+        # Update state
+        current_state.update(updates)
+        return await self.store_agent_state(agent_id, current_state, ttl)
+        
+    # For compatibility with the old implementation
+    async def get_agent_state(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        return await self.short_term.get_agent_state(agent_id)
 
 
 memory_manager = MemoryManager() 

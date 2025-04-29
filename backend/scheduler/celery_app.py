@@ -24,8 +24,8 @@ app.conf.update(
     worker_log_format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-# Load tasks from the tasks module
-app.autodiscover_tasks(["scheduler.tasks"], force=True)
+# Comment out to avoid autodiscover issues - we'll import tasks manually if needed
+# app.autodiscover_tasks(["scheduler.tasks"], force=True)
 
 
 @worker_ready.connect
