@@ -1,0 +1,134 @@
+version: '3.8'
+
+services:
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - workspace-data:/workspace
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - chroma
+    restart: unless-stopped
+    networks:
+      - m31_network
+
+  # Celery Worker
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A scheduler.celery_app worker --loglevel=info
+    volumes:
+      - ./backend:/app
+      - workspace-data:/workspace
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - chroma
+      - backend
+    restart: unless-stopped
+    networks:
+      - m31_network
+
+  # Celery Beat (for scheduled tasks)
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A scheduler.celery_app beat --loglevel=info
+    volumes:
+      - ./backend:/app
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - worker
+    restart: unless-stopped
+    networks:
+      - m31_network
+
+  # Celery Flower (for monitoring)
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A scheduler.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - worker
+    restart: unless-stopped
+    networks:
+      - m31_network
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    env_file:
+      - .env
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - m31_network
+
+  # Redis for cache and Celery broker
+  redis:
+    image: redis:7.0-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - m31_network
+
+  # ChromaDB for vector storage
+  chroma:
+    image: ghcr.io/chroma-core/chroma:0.4.22
+    ports:
+      - "8100:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    environment:
+      - ALLOW_RESET=true
+      - ANONYMIZED_TELEMETRY=false
+    restart: unless-stopped
+    networks:
+      - m31_network
+
+networks:
+  m31_network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  chroma-data:
+  workspace-data: 

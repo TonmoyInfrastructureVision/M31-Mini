@@ -1,0 +1,72 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+/venv
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build outputs
+/.next/
+/out/
+/build
+/dist
+*.egg-info/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Testing
+/.coverage
+/.pytest_cache/
+/htmlcov/
+/coverage
+
+# IDE files
+/.idea
+/.vscode
+/.vs
+*.swp
+*.swo
+.DS_Store
+
+# Docker volumes
+/data
+
+# Backend specific
+/.mypy_cache/
+/celerybeat-schedule
+celerybeat.pid
+*.sqlite3
+/backend/media
+/backend/static
+/backend/.env
+
+# Frontend specific
+/.cache/
+/frontend/.next
+/frontend/out
+/frontend/node_modules
+/frontend/.env
+
+# Temporary files
+/temp
+/tmp
+*.tmp
+*~
+
+# Workspace
+/workspace-data
+/chroma-data
+/redis-data 
