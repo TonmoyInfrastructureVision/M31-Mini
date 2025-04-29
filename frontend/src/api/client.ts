@@ -67,7 +67,7 @@ export const apiRequest = async <T>(
       if (errorResponse && errorResponse.data) {
         return {
           data: {} as T,
-          error: (errorResponse.data as any).detail || 'An error occurred',
+          error: (errorResponse.data as Record<string, string>).detail || 'An error occurred',
           status: errorResponse.status,
         };
       }

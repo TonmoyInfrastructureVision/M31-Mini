@@ -9,7 +9,7 @@ interface LayoutProps {
   title?: string;
 }
 
-export default function Layout({ children, title = 'M31-Mini' }: LayoutProps) {
+export default function Layout({ children, title = 'M31-Mini' }: LayoutProps): React.ReactElement {
   const router = useRouter();
   
   const navLinks = [
@@ -19,7 +19,7 @@ export default function Layout({ children, title = 'M31-Mini' }: LayoutProps) {
     { href: '/tasks', label: 'Tasks' },
   ];
   
-  const isActiveLink = (href: string, matchExact = false) => {
+  const isActiveLink = (href: string, matchExact = false): boolean => {
     if (matchExact) {
       return router.pathname === href;
     }

@@ -14,6 +14,7 @@ import { LineChart, PieChart } from '../components/Charts';
 import RefreshIndicator from '../components/RefreshIndicator';
 import AgentStatusCard from '../components/AgentStatusCard';
 import TaskListItem from '../components/TaskListItem';
+import { logger } from '../utils/logger';
 
 interface AgentWithActiveTasks {
   agent: Agent;
@@ -82,7 +83,7 @@ export default function MonitoringDashboard(): React.ReactElement {
             ),
           };
         } catch (err) {
-          console.error(`Error fetching tasks for agent ${agent.id}:`, err);
+          logger.error(`Error fetching tasks for agent ${agent.id}:`, err);
           return {
             agent,
             activeTasks: [],
@@ -93,7 +94,6 @@ export default function MonitoringDashboard(): React.ReactElement {
       const results = await Promise.all(agentsWithTasksPromises);
       setAgentsWithTasks(results);
       
-      // Calculate system stats
       const allTasks = results.flatMap((item: AgentWithActiveTasks) => item.activeTasks);
       const totalTasks = allTasks.length;
       
@@ -111,7 +111,6 @@ export default function MonitoringDashboard(): React.ReactElement {
       
       setStats(currentStats);
       
-      // Prepare chart data
       const agentChartData: Segment[] = [
         { value: currentStats.activeAgents, label: 'Active', color: '#3b82f6' },
         { value: currentStats.idleAgents, label: 'Idle', color: '#10b981' },
@@ -128,8 +127,6 @@ export default function MonitoringDashboard(): React.ReactElement {
       setAgentStatusData(agentChartData);
       setTaskStatusData(taskChartData);
       
-      // Generate some sample historical data for the line chart
-      // In a real application, this would come from the API
       const daysAgo = (days: number): string => {
         const date = new Date();
         date.setDate(date.getDate() - days);
@@ -151,7 +148,7 @@ export default function MonitoringDashboard(): React.ReactElement {
       setLastRefreshed(new Date());
       setError(null);
     } catch (err) {
-      console.error('Error fetching data:', err);
+      logger.error('Error fetching data:', err);
       setError('Failed to load monitoring data');
     } finally {
       setLoading(false);
