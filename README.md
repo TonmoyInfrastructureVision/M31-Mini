@@ -199,5 +199,29 @@ pytest
 - Backend: PEP 8
 - Frontend: Prettier + ESLint
 
+## Security
+
+### Reporting Vulnerabilities
+Please report any security vulnerabilities to security@tonmoyinfrastructurevision.com. We appreciate responsible disclosure and will respond promptly.
+
+### Security Best Practices
+1. Always keep dependencies updated
+2. Use strong API keys and rotate them regularly
+3. Run the system in a secure network environment
+4. Monitor the [GitHub Security Advisories](https://github.com/TonmoyInfrastructureVision/M31-Mini/security/dependabot) for updates
+
+### Dependency Management
+We use Dependabot to automatically monitor and update dependencies. To update your local dependencies:
+
+```bash
+# Backend
+cd backend
+pip install -r requirements.txt --upgrade
+
+# Frontend
+cd frontend
+npm update
+```
+
 ## License
 MIT License - See [LICENSE](LICENSE) for details.
