@@ -4,14 +4,21 @@ import { AgentStatus } from '../types/agent';
 import { TaskStatus } from '../types/task';
 
 type StatusType = AgentStatus | TaskStatus | 'success' | 'error' | 'warning' | 'info';
+type BadgeSize = 'sm' | 'md' | 'lg';
 
 interface StatusBadgeProps {
   status: StatusType;
   className?: string;
   children?: ReactNode;
+  size?: BadgeSize;
 }
 
-export default function StatusBadge({ status, className, children }: StatusBadgeProps): React.ReactElement {
+export default function StatusBadge({ 
+  status, 
+  className, 
+  children,
+  size = 'md'
+}: StatusBadgeProps): React.ReactElement {
   const getStatusStyle = (status: StatusType): string => {
     // Agent statuses
     if (status === 'idle') return 'bg-green-100 text-green-800';
@@ -37,11 +44,24 @@ export default function StatusBadge({ status, className, children }: StatusBadge
     return 'bg-gray-100 text-gray-800';
   };
 
+  const getSizeStyles = (size: BadgeSize): string => {
+    switch (size) {
+      case 'sm':
+        return 'px-1.5 py-0.5 text-[10px] leading-4';
+      case 'lg':
+        return 'px-3 py-1 text-sm leading-5';
+      case 'md':
+      default:
+        return 'px-2 py-0.5 text-xs leading-5';
+    }
+  };
+
   return (
     <span
       className={clsx(
-        'px-2 inline-flex text-xs leading-5 font-semibold rounded-full',
+        'inline-flex font-semibold rounded-full',
         getStatusStyle(status),
+        getSizeStyles(size),
         className
       )}
     >
