@@ -4,11 +4,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging.config
 
-from .config.settings import settings
-from .config.logging_config import setup_logging
-from .api import api_router
-from .tools import initialize_tools
-from .memory import memory_manager
+from config.settings import settings
+from config.logging_config import setup_logging
+from api import api_router
+from tools import initialize_tools
+from memory import memory_manager
 
 # Setup logging
 logging_config = setup_logging()
