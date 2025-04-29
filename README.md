@@ -48,7 +48,7 @@ M31-Mini is a production-ready fullstack autonomous agent framework designed for
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/M31-Mini.git
+   git clone https://github.com/TonmoyInfrastructureVision/M31-Mini.git
    cd M31-Mini
    ```
 
