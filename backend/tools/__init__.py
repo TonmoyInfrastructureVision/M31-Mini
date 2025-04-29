@@ -1,28 +1,23 @@
 from typing import Dict, List, Any, Optional
+import logging
 
-from .base import registry, BaseTool, ToolResult
-from .web_search import WebSearchTool
-from .file_io import FileIOTool
-from .shell_tool import ShellTool
-from ..config.settings import settings
-from ..config.logging_config import get_logger
+from tools.base import registry, BaseTool, ToolResult
+from tools.web_search import WebSearchTool
+from tools.file_io import FileIOTool
+from tools.shell_tool import ShellTool
+from config.settings import settings
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def initialize_tools(workspace_dir: str = "/workspace") -> None:
-    enabled_tools = settings.tools_enabled
+def initialize_tools() -> None:
+    """Initialize and register all available tools based on configuration."""
+    logger.info("Initializing tools")
     
-    logger.info(f"Initializing tools. Enabled tools: {', '.join(enabled_tools)}")
-    
-    if "web_search" in enabled_tools:
-        registry.register(WebSearchTool())
-    
-    if "file_io" in enabled_tools:
-        registry.register(FileIOTool(workspace_dir=workspace_dir))
-    
-    if "shell" in enabled_tools:
-        registry.register(ShellTool(workspace_dir=workspace_dir))
+    # Register tools
+    registry.register(WebSearchTool())
+    registry.register(FileIOTool())
+    registry.register(ShellTool())
     
     logger.info(f"Registered {len(registry.tools)} tools: {', '.join(registry.get_tool_names())}")
 
@@ -31,6 +26,7 @@ async def execute_tool(
     tool_name: str, 
     tool_args: Dict[str, Any]
 ) -> ToolResult:
+    """Execute a tool by name with the provided arguments."""
     tool = registry.get_tool(tool_name)
     
     if not tool:

@@ -14,6 +14,7 @@ export default function Layout({ children, title = 'M31-Mini' }: LayoutProps) {
   
   const navLinks = [
     { href: '/', label: 'Dashboard', matchExact: true },
+    { href: '/dashboard', label: 'Monitoring', matchExact: true },
     { href: '/agents', label: 'Agents' },
     { href: '/tasks', label: 'Tasks' },
   ];

@@ -3,9 +3,9 @@ import json
 from datetime import datetime
 import uuid
 
-from ..config.logging_config import get_logger
+from config.logging_config import get_logger
 from .llm_wrapper import default_llm, LLMResponse
-from ..memory import memory_manager
+from memory import memory_manager
 
 logger = get_logger(__name__)
 

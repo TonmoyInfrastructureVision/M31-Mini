@@ -62,4 +62,4 @@ export interface Reflection {
   reasoning: string;
   learning: string;
   next_steps: string[];
-} 
+}

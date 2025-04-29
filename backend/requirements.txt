@@ -3,26 +3,45 @@ fastapi==0.109.2
 uvicorn==0.27.1
 websockets==11.0.3
 pydantic==2.6.1
+pydantic-settings==2.1.0
 python-multipart==0.0.6
+
+# Security
+passlib==1.7.4
+bcrypt==4.0.1
+python-jose==3.3.0
 
 # HTTP Client
 httpx==0.26.0
+
+# Database
+sqlalchemy==2.0.26
+alembic==1.12.1
+sqlite3-to-mysql==1.4.10
 
 # Celery and Redis
 celery==5.3.6
 redis==5.0.1
 flower==2.0.1
 
-# Database and Vector Store
+# Vector Store and Embeddings
 chromadb==0.4.22
+sentence-transformers==2.3.1
 opentelemetry-api==1.20.0
 opentelemetry-sdk==1.20.0
+
+# LLM APIs
+openai==1.12.0
+anthropic==0.7.4
 
 # Utilities
 python-json-logger==2.0.7
 python-dotenv==1.0.0
 tenacity==8.2.3
+rich==13.7.0
 
 # Type Hints
 mypy==1.8.0
-types-redis==4.6.0.5 
+types-redis==4.6.0.5
+types-requests==2.31.0.20240218
+types-python-jose==3.3.4.8 

@@ -1,46 +1,69 @@
 import { apiRequest } from './client';
-import { Agent, AgentCreate, AgentResponse, AgentListResponse } from '../types/agent';
+import { Agent, AgentCreate, AgentListResponse, AgentUpdate } from '../types/agent';
 
 export const agentApi = {
-  createAgent: async (data: AgentCreate): Promise<AgentResponse> => {
-    const response = await apiRequest<AgentResponse>({
-      method: 'POST',
-      url: '/agents',
-      data,
-    });
-    return response.data;
-  },
-
   getAgents: async (): Promise<AgentListResponse> => {
     const response = await apiRequest<AgentListResponse>({
       method: 'GET',
-      url: '/agents',
+      url: '/agents'
     });
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    
     return response.data;
   },
 
-  getAgent: async (id: string): Promise<AgentResponse> => {
-    const response = await apiRequest<AgentResponse>({
+  getAgent: async (id: string): Promise<Agent> => {
+    const response = await apiRequest<Agent>({
       method: 'GET',
-      url: `/agents/${id}`,
+      url: `/agents/${id}`
     });
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    
     return response.data;
   },
 
-  updateAgent: async (id: string, data: Partial<AgentCreate>): Promise<AgentResponse> => {
-    const response = await apiRequest<AgentResponse>({
+  createAgent: async (data: AgentCreate): Promise<Agent> => {
+    const response = await apiRequest<Agent>({
+      method: 'POST',
+      url: '/agents',
+      data
+    });
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    
+    return response.data;
+  },
+
+  updateAgent: async (id: string, data: AgentUpdate): Promise<Agent> => {
+    const response = await apiRequest<Agent>({
       method: 'PATCH',
       url: `/agents/${id}`,
-      data,
+      data
     });
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
+    
     return response.data;
   },
 
-  deleteAgent: async (id: string): Promise<{ success: boolean }> => {
-    const response = await apiRequest<{ success: boolean }>({
+  deleteAgent: async (id: string): Promise<void> => {
+    const response = await apiRequest<void>({
       method: 'DELETE',
-      url: `/agents/${id}`,
+      url: `/agents/${id}`
     });
-    return response.data;
+    
+    if (response.error) {
+      throw new Error(response.error);
+    }
   }
 }; 

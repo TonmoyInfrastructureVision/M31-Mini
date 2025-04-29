@@ -39,4 +39,4 @@ export interface AgentResponse extends Agent {}
 export interface AgentListResponse {
   agents: Agent[];
   total: number;
-} 
+}

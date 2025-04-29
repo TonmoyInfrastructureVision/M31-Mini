@@ -3,10 +3,10 @@ import asyncio
 from typing import Dict, Any, Optional
 
 from .celery_app import app
-from ..config.logging_config import get_logger
-from ..agent_core import Agent
-from ..memory import memory_manager
-from ..tools import initialize_tools
+from config.logging_config import get_logger
+from agent_core import Agent
+from memory import memory_manager
+from tools import initialize_tools
 
 logger = get_logger(__name__)
 

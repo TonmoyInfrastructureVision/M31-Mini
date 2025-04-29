@@ -4,9 +4,9 @@ import asyncio
 import time
 from datetime import datetime
 
-from ..config.logging_config import get_logger
-from ..tools import execute_tool, registry
-from ..memory import memory_manager
+from config.logging_config import get_logger
+from tools import execute_tool, registry
+from memory import memory_manager
 from .llm_wrapper import default_llm, LLMResponse
 
 logger = get_logger(__name__)

@@ -6,9 +6,10 @@ import logging.config
 
 from config.settings import settings
 from config.logging_config import setup_logging
-from api import api_router
+from api import router as api_router
 from tools import initialize_tools
 from memory import memory_manager
+from agent_core import db
 
 # Setup logging
 logging_config = setup_logging()
@@ -38,6 +39,10 @@ async def startup_event():
     logger.info("Starting M31-Mini API")
     
     try:
+        # Initialize database
+        db.initialize()
+        logger.info("Database initialized")
+        
         # Initialize memory stores
         await memory_manager.initialize()
         logger.info("Memory stores initialized")

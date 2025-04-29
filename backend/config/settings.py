@@ -1,62 +1,111 @@
-from pydantic import BaseSettings, Field
-from typing import Optional, Dict, List, Any
+from typing import Dict, List, Optional, Union
+from pathlib import Path
+import os
+
+from pydantic import BaseModel, field_validator
+from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Base directory
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-class LLMSettings(BaseSettings):
-    api_key: str = Field(..., env="OPENROUTER_API_KEY")
-    base_url: str = Field("https://openrouter.ai/api/v1", env="LLM_BASE_URL")
-    default_model: str = Field("anthropic/claude-3-opus-20240229", env="DEFAULT_MODEL")
-    timeout: int = Field(60, env="LLM_TIMEOUT")
-    max_tokens: int = Field(4000, env="LLM_MAX_TOKENS")
-    temperature: float = Field(0.7, env="LLM_TEMPERATURE")
+class APISettings(BaseModel):
+    host: str = "0.0.0.0"
+    port: int = 8000
+    debug: bool = False
+    cors_origins: List[str] = ["*"]
+    
+    @field_validator("cors_origins")
+    def validate_cors_origins(cls, v, values):
+        if v == ["*"]:
+            return v
+        if isinstance(v, str):
+            return [i.strip() for i in v.split(",")]
+        return v
 
 
-class ChromaSettings(BaseSettings):
-    host: str = Field("chroma", env="CHROMA_HOST")
-    port: int = Field(8000, env="CHROMA_PORT")
-    collection_name: str = Field("m31_memory", env="CHROMA_COLLECTION")
+class DatabaseSettings(BaseModel):
+    url: str = "sqlite:///./m31mini.db"
+    connect_args: Dict = {"check_same_thread": False}
+    echo: bool = False
 
 
-class RedisSettings(BaseSettings):
-    host: str = Field("redis", env="REDIS_HOST")
-    port: int = Field(6379, env="REDIS_PORT")
-    db: int = Field(0, env="REDIS_DB")
-    password: Optional[str] = Field(None, env="REDIS_PASSWORD")
-    ttl: int = Field(3600, env="REDIS_TTL")
+class SecuritySettings(BaseModel):
+    secret_key: str = os.getenv("SECRET_KEY", "secret_key_for_development_only")
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
 
 
-class CelerySettings(BaseSettings):
-    broker_url: str = Field("redis://redis:6379/0", env="CELERY_BROKER")
-    result_backend: str = Field("redis://redis:6379/0", env="CELERY_BACKEND")
-    task_serializer: str = Field("json", env="CELERY_TASK_SERIALIZER")
-    result_serializer: str = Field("json", env="CELERY_RESULT_SERIALIZER")
+class ChromaSettings(BaseModel):
+    host: Optional[str] = "localhost"
+    port: Optional[int] = 8000
+    persist_directory: str = str(BASE_DIR / "data" / "chroma")
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
-class APISettings(BaseSettings):
-    host: str = Field("0.0.0.0", env="API_HOST")
-    port: int = Field(8000, env="API_PORT")
-    debug: bool = Field(False, env="API_DEBUG")
-    cors_origins: List[str] = Field(["http://localhost:3000"], env="CORS_ORIGINS")
+class RedisSettings(BaseModel):
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    password: Optional[str] = None
+    use_ssl: bool = False
+
+
+class CelerySettings(BaseModel):
+    broker_url: str = "redis://localhost:6379/0"
+    result_backend: str = "redis://localhost:6379/0"
+    task_serializer: str = "json"
+    result_serializer: str = "json"
+    accept_content: List[str] = ["json"]
+    enable_utc: bool = True
+
+
+class LLMSettings(BaseModel):
+    provider: str = "openai"
+    model: str = "gpt-4"
+    api_key: str = os.getenv("OPENAI_API_KEY", "")
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    temperature: float = 0.7
+    timeout: int = 60
+
+
+class AgentSettings(BaseModel):
+    workspace_root: str = str(BASE_DIR / "workspaces")
+    default_model: str = "gpt-4"
+    max_planning_steps: int = 15
+    max_execution_steps: int = 50
 
 
 class Settings(BaseSettings):
-    app_name: str = Field("M31-Mini", env="APP_NAME")
-    log_level: str = Field("INFO", env="LOG_LEVEL")
-    llm: LLMSettings = LLMSettings()
+    api: APISettings = APISettings()
+    db: DatabaseSettings = DatabaseSettings()
+    security: SecuritySettings = SecuritySettings()
     chroma: ChromaSettings = ChromaSettings()
     redis: RedisSettings = RedisSettings()
     celery: CelerySettings = CelerySettings()
-    api: APISettings = APISettings()
-    allowed_shell_commands: List[str] = Field(
-        ["ls", "cat", "head", "tail", "grep", "find"], env="ALLOWED_COMMANDS"
-    )
-    tools_enabled: List[str] = Field(
-        ["web_search", "file_io", "shell"], env="TOOLS_ENABLED"
-    )
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    llm: LLMSettings = LLMSettings()
+    agent: AgentSettings = AgentSettings()
+    log_level: str = "INFO"
+    environment: str = os.getenv("ENVIRONMENT", "development")
 
 
-settings = Settings() 
+# Create settings instance
+settings = Settings()
+
+# Environment-specific overrides
+if settings.environment == "production":
+    settings.api.debug = False
+    settings.api.cors_origins = os.getenv("CORS_ORIGINS", "").split(",")
+    settings.db.echo = False
+    settings.security.secret_key = os.getenv("SECRET_KEY")
+    if not settings.security.secret_key:
+        raise ValueError("SECRET_KEY environment variable is required in production mode")
+    
+    # Redis connection in production may use SSL
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url and redis_url.startswith("rediss://"):
+        settings.redis.use_ssl = True 

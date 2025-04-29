@@ -21,4 +21,4 @@ export interface MemorySearchResponse {
   agent_id: string;
   memories: Memory[];
   query: string;
-} 
+}

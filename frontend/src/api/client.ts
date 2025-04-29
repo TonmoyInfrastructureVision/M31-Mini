@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosError, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
@@ -11,26 +11,33 @@ const apiClient = axios.create({
 
 // Add a request interceptor
 apiClient.interceptors.request.use(
-  (config) => {
+  (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   },
-  (error) => {
+  (error: unknown): Promise<unknown> => {
     return Promise.reject(error);
   }
 );
 
 // Add a response interceptor
 apiClient.interceptors.response.use(
-  (response) => {
+  (response: AxiosResponse): AxiosResponse => {
     return response;
   },
-  (error: AxiosError) => {
-    const response = error.response;
-    
-    // Handle error responses
-    if (response && response.status === 401) {
-      // Handle unauthorized
-      console.error('Unauthorized access');
+  (error: unknown): Promise<unknown> => {
+    if (axios.isAxiosError(error)) {
+      const axiosError = error as AxiosError;
+      const response = axiosError.response;
+      
+      // Handle error responses
+      if (response && response.status === 401) {
+        localStorage.removeItem('auth_token');
+        window.location.href = '/login';
+      }
     }
     
     return Promise.reject(error);
@@ -52,13 +59,18 @@ export const apiRequest = async <T>(
       data: response.data,
       status: response.status,
     };
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      return {
-        data: {} as T,
-        error: error.response.data.detail || 'An error occurred',
-        status: error.response.status,
-      };
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      const axiosError = error as AxiosError;
+      const errorResponse = axiosError.response;
+      
+      if (errorResponse && errorResponse.data) {
+        return {
+          data: {} as T,
+          error: (errorResponse.data as any).detail || 'An error occurred',
+          status: errorResponse.status,
+        };
+      }
     }
     return {
       data: {} as T,

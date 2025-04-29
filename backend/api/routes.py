@@ -20,7 +20,7 @@ from .models import (
     MemorySearchRequest,
     MemorySearchResponse
 )
-from ..scheduler import (
+from scheduler import (
     app as celery_app,
     run_agent_task,
     cancel_agent_task,
@@ -29,9 +29,9 @@ from ..scheduler import (
     delete_agent,
     initialize_system
 )
-from ..memory import memory_manager
-from ..agent_core import Agent
-from ..config.logging_config import get_logger
+from memory import memory_manager
+from agent_core import Agent
+from config.logging_config import get_logger
 
 logger = get_logger(__name__)
 

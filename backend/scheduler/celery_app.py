@@ -1,8 +1,8 @@
 from celery import Celery
 from celery.signals import worker_ready, worker_shutdown
 
-from ..config.settings import settings
-from ..config.logging_config import get_logger
+from config.settings import settings
+from config.logging_config import get_logger
 
 logger = get_logger(__name__)
 

@@ -1,6 +1,4 @@
-import { agentApi } from './agent';
-import { taskApi } from './task';
-import { memoryApi } from './memory';
-import apiClient from './client';
-
-export { agentApi, taskApi, memoryApi, apiClient }; 
+export * from './client';
+export { agentApi } from './agent';
+export { taskApi } from './task';
+export { memoryApi } from './memory'; 
