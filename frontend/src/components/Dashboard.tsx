@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { agentApi, taskApi } from '../api';
 import { Agent } from '../types/agent';
-import { TaskSummary } from '../types/task';
+import { TaskSummary, ExtendedTaskSummary } from '../types/task';
 import { Button, DashboardMetric, Alert } from '.';
 import * as Accordion from '@radix-ui/react-accordion';
 import * as Avatar from '@radix-ui/react-avatar';
@@ -41,7 +41,7 @@ const Dashboard = ({ className }: DashboardProps): React.ReactElement => {
     completedTasks: 0,
   });
   const [recentAgents, setRecentAgents] = useState<Agent[]>([]);
-  const [recentTasks, setRecentTasks] = useState<TaskSummary[]>([]);
+  const [recentTasks, setRecentTasks] = useState<ExtendedTaskSummary[]>([]);
   const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,13 +62,15 @@ const Dashboard = ({ className }: DashboardProps): React.ReactElement => {
         setRecentAgents(sortedAgents.slice(0, 3));
         
         // Fetch all tasks
-        let allTasks: TaskSummary[] = [];
+        let allTasks: ExtendedTaskSummary[] = [];
         for (const agent of agents) {
           try {
             const tasksData = await taskApi.getAgentTasks(agent.id);
             allTasks = [...allTasks, ...tasksData.tasks.map(task => ({
               ...task,
-              agentName: agent.name
+              agent_id: agent.id,
+              agentName: agent.name,
+              updated_at: task.created_at // Default to created_at if updated_at is not available
             }))];
           } catch (err) {
             logger.error(`Error fetching tasks for agent ${agent.id}:`, err);
