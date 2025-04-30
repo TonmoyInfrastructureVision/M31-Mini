@@ -32,6 +32,12 @@ export interface TaskSummary {
   success?: boolean;
 }
 
+export interface ExtendedTaskSummary extends TaskSummary {
+  agent_id?: string;
+  agentName?: string;
+  updated_at?: string;
+}
+
 export interface Plan {
   id: string;
   goal: string;
