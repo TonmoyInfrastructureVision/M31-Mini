@@ -21,8 +21,10 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
 
 
 def setup_logging() -> Dict[str, Any]:
-    log_dir = os.path.dirname(settings.logging.file or "./logs/m31_mini.log")
-    os.makedirs(log_dir, exist_ok=True)
+    log_file_path = settings.logging.file or "./logs/m31_mini.log"
+    log_dir = os.path.dirname(log_file_path)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
     
     log_format = settings.logging.format
     date_format = settings.logging.date_format
@@ -95,8 +97,17 @@ def setup_logging() -> Dict[str, Any]:
             "class": "logging.handlers.RotatingFileHandler",
             "formatter": "standard" if not settings.logging.json_logs else "json",
             "filename": settings.logging.file,
-            "maxBytes": settings.logging.max_size_mb * 1024 * 1024,
-            "backupCount": settings.logging.backup_count,
+            "maxBytes": (settings.logging.max_size_mb or 10) * 1024 * 1024,
+            "backupCount": settings.logging.backup_count or 5,
+        }
+    
+    # Add json handler if json_logs enabled
+    if settings.logging.json_logs:
+        config["handlers"]["json"] = {
+            "level": settings.logging.level,
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "stream": sys.stdout,
         }
     
     # Add logstash handler if enabled
