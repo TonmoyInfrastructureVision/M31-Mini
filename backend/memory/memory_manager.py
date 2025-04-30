@@ -1,283 +1,583 @@
-from typing import Dict, List, Any, Optional, Tuple, Union
+import logging
+from typing import List, Dict, Any, Optional, Tuple, Set, Union, Callable
+import uuid
 import json
-from datetime import datetime
+import time
+import asyncio
+from datetime import datetime, timedelta
+import hashlib
+import os
+from abc import ABC, abstractmethod
 
-from .chroma_store import ChromaMemoryStore
-from .redis_store import RedisMemoryStore
-from ..config.logging_config import get_logger
+from config.settings import settings
+from .vector_store import VectorStore, ChromaVectorStore
+from .redis_store import RedisStore, MemoryEntry
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-class MemoryManager:
-    def __init__(self) -> None:
-        self.long_term = ChromaMemoryStore()
-        self.short_term = RedisMemoryStore()
-    
+class MemoryInterface(ABC):
+    @abstractmethod
+    async def add(self, data: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None, namespace: str = "default") -> str:
+        pass
+
+    @abstractmethod
+    async def search(self, query: str, limit: int = 5, namespace: str = "default", 
+                    filters: Optional[Dict[str, Any]] = None, min_score: float = 0.0) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    async def add_conversation(self, agent_id: str, task_id: str, role: str, content: str, 
+                              metadata: Optional[Dict[str, Any]] = None) -> str:
+        pass
+
+    @abstractmethod
+    async def get_conversation_history(self, agent_id: str, task_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    async def clear(self, namespace: str = "default") -> bool:
+        pass
+
+
+class MemoryManager(MemoryInterface):
+    def __init__(self):
+        self.initialized = False
+        self.vector_store: Optional[VectorStore] = None
+        self.redis_store: Optional[RedisStore] = None
+        self.available_namespaces: Set[str] = set()
+        self._batch_queue: Dict[str, List[Tuple[Dict[str, Any], Dict[str, Any]]]] = {}
+        self._task_memory_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._memory_locks: Dict[str, asyncio.Lock] = {}
+        
     async def initialize(self) -> None:
+        if self.initialized:
+            return
+        
+        logger.info("Initializing memory manager")
+        
         try:
-            await self.long_term.connect()
-            await self.short_term.connect()
-            logger.info("Memory stores initialized")
+            # Initialize vector database
+            if settings.memory.vector_db_type == "chroma":
+                logger.info(f"Initializing ChromaDB vector store with persistence at {settings.memory.chroma_persist_directory}")
+                os.makedirs(settings.memory.chroma_persist_directory, exist_ok=True)
+                self.vector_store = ChromaVectorStore(
+                    persist_directory=settings.memory.chroma_persist_directory,
+                    embedding_model=settings.memory.embedding_model
+                )
+                await self.vector_store.initialize()
+            else:
+                raise ValueError(f"Unsupported vector database type: {settings.memory.vector_db_type}")
+            
+            # Initialize Redis
+            logger.info(f"Initializing Redis store at {settings.redis.host}:{settings.redis.port}")
+            self.redis_store = RedisStore(
+                host=settings.redis.host,
+                port=settings.redis.port,
+                password=settings.redis.password,
+                db=settings.redis.db,
+                ssl=settings.redis.ssl,
+                default_ttl=settings.memory.redis_ttl_seconds
+            )
+            await self.redis_store.initialize()
+            
+            # Set up batch processing if enabled
+            if settings.memory.structured_storage_enabled:
+                logger.info("Starting background batch processing task")
+                asyncio.create_task(self._batch_processing_loop())
+            
+            self.initialized = True
+            logger.info("Memory manager initialized successfully")
         except Exception as e:
-            logger.error(f"Error initializing memory stores: {str(e)}")
+            logger.error(f"Error initializing memory manager: {str(e)}")
             raise
     
     async def close(self) -> None:
-        await self.short_term.close()
-        logger.debug("Memory stores closed")
-    
-    async def add_memory(
-        self,
-        agent_id: str,
-        text: str,
-        metadata: Optional[Dict[str, Any]] = None,
-        memory_id: Optional[str] = None,
-        memory_type: str = "short_term",
-    ) -> str:
-        metadata = metadata or {}
+        logger.info("Closing memory manager connections")
         
-        try:
-            if memory_type == "long_term":
-                memory_id = await self.long_term.add_memory(
-                    agent_id=agent_id,
-                    text=text,
-                    metadata=metadata,
-                    memory_id=memory_id
-                )
-                logger.debug(f"Added long-term memory for agent {agent_id}: {memory_id}")
-            else:
-                memory_id = await self.short_term.add_memory(
-                    agent_id=agent_id,
-                    text=text,
-                    metadata=metadata,
-                    memory_id=memory_id
-                )
-                logger.debug(f"Added short-term memory for agent {agent_id}: {memory_id}")
+        if self.vector_store:
+            await self.vector_store.close()
             
-            return memory_id
-        except Exception as e:
-            logger.error(f"Error adding memory: {str(e)}")
-            raise
+        if self.redis_store:
+            await self.redis_store.close()
+            
+        self.initialized = False
+        logger.info("Memory manager closed")
     
-    # For compatibility with the old implementation
-    async def add_long_term_memory(
-        self, agent_id: str, text: str, metadata: Optional[Dict[str, Any]] = None
-    ) -> str:
-        return await self.add_memory(agent_id, text, metadata, memory_type="long_term")
+    async def add(self, data: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None, namespace: str = "default") -> str:
+        if not self.initialized:
+            await self.initialize()
+            
+        if not metadata:
+            metadata = {}
+            
+        # Add timestamp if not present
+        if "timestamp" not in metadata:
+            metadata["timestamp"] = datetime.utcnow().isoformat()
+            
+        # Generate a unique ID if not provided
+        entry_id = metadata.get("id", str(uuid.uuid4()))
+        metadata["id"] = entry_id
         
-    # For compatibility with the old implementation
-    async def search_long_term_memory(
-        self, agent_id: str, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        return await self.search_memory(agent_id, query, limit, "long_term")
-    
-    async def search_memory(
-        self,
-        agent_id: str,
-        query: str,
-        limit: int = 5,
-        search_type: str = "long_term",
-    ) -> List[Dict[str, Any]]:
-        try:
-            if search_type == "long_term":
-                memories = await self.long_term.search_memory(
-                    agent_id=agent_id,
-                    query=query,
-                    limit=limit
-                )
-                logger.debug(f"Found {len(memories)} long-term memories for query: {query}")
-                return memories
-            else:
-                # For short-term, we just get the recent memories
-                memories = await self.short_term.get_agent_memories(
-                    agent_id=agent_id,
-                    limit=limit
-                )
-                logger.debug(f"Retrieved {len(memories)} short-term memories")
-                return memories
-        except Exception as e:
-            logger.error(f"Error searching memory: {str(e)}")
-            return []
-    
-    async def get_memory(
-        self,
-        memory_id: str,
-        memory_type: str = "auto",
-    ) -> Optional[Dict[str, Any]]:
-        try:
-            # Try short-term first if auto
-            if memory_type in ["auto", "short_term"]:
-                memory = await self.short_term.get_memory(memory_id)
-                if memory:
-                    return memory
+        # Convert data to text if it's not already
+        if isinstance(data, dict):
+            text = json.dumps(data)
+        else:
+            text = str(data)
             
-            # If not found or explicitly long-term
-            if memory_type in ["auto", "long_term"]:
-                memory = await self.long_term.get_memory(memory_id)
-                if memory:
-                    return memory
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error getting memory {memory_id}: {str(e)}")
-            return None
-    
-    async def delete_memory(
-        self,
-        memory_id: str,
-        memory_type: str = "auto",
-    ) -> bool:
-        try:
-            success = False
-            
-            if memory_type in ["auto", "short_term"]:
-                success = await self.short_term.delete_memory(memory_id)
-            
-            if not success and memory_type in ["auto", "long_term"]:
-                success = await self.long_term.delete_memory(memory_id)
-            
-            return success
-        except Exception as e:
-            logger.error(f"Error deleting memory {memory_id}: {str(e)}")
-            return False
-    
-    async def delete_agent_memories(
-        self,
-        agent_id: str,
-        memory_type: str = "all",
-    ) -> bool:
-        try:
-            success = True
-            
-            if memory_type in ["all", "short_term"]:
-                st_success = await self.short_term.delete_agent_memories(agent_id)
-                success = success and st_success
-            
-            if memory_type in ["all", "long_term"]:
-                lt_success = await self.long_term.delete_agent_memories(agent_id)
-                success = success and lt_success
-            
-            return success
-        except Exception as e:
-            logger.error(f"Error deleting agent memories: {str(e)}")
-            return False
-    
-    async def promote_to_long_term(
-        self,
-        memory_id: str,
-        additional_metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[str]:
-        try:
-            # Get from short-term
-            memory = await self.short_term.get_memory(memory_id)
-            if not memory:
-                logger.warning(f"Memory not found for promotion: {memory_id}")
-                return None
-            
-            # Add metadata
-            metadata = memory["metadata"].copy()
-            metadata["promoted_from"] = memory_id
-            metadata["promoted_at"] = datetime.now().isoformat()
-            
-            if additional_metadata:
-                metadata.update(additional_metadata)
-            
-            # Add to long-term
-            agent_id = metadata["agent_id"]
-            new_id = await self.long_term.add_memory(
-                agent_id=agent_id,
-                text=memory["text"],
-                metadata=metadata
+        # Store in vector database for semantic search
+        await self.vector_store.add(
+            id=entry_id,
+            text=text,
+            metadata=metadata,
+            namespace=namespace
+        )
+        
+        # Ensure namespace is tracked
+        self.available_namespaces.add(namespace)
+        
+        # Store in redis for fast lookup
+        if settings.memory.structured_storage_enabled:
+            entry = MemoryEntry(
+                id=entry_id,
+                data=data,
+                metadata=metadata,
+                namespace=namespace,
+                text=text,
+                created_at=datetime.utcnow()
             )
-            
-            logger.info(f"Promoted memory {memory_id} to long-term: {new_id}")
-            return new_id
-        except Exception as e:
-            logger.error(f"Error promoting memory to long-term: {str(e)}")
-            return None
+            await self.redis_store.set(f"memory:{namespace}:{entry_id}", entry.model_dump())
+        
+        logger.debug(f"Added memory entry {entry_id} to namespace {namespace}")
+        return entry_id
     
-    async def get_agent_context(
-        self,
-        agent_id: str,
-        query: Optional[str] = None,
-        max_short_term: int = 5,
-        max_long_term: int = 3,
-    ) -> Dict[str, Any]:
-        try:
-            result = {
-                "short_term": [],
-                "long_term": [],
-                "state": None,
-            }
+    async def add_batch(self, items: List[Tuple[Dict[str, Any], Dict[str, Any]]], namespace: str = "default") -> List[str]:
+        if not self.initialized:
+            await self.initialize()
             
-            # Get short-term memories
-            if max_short_term > 0:
-                short_term = await self.short_term.get_agent_memories(
-                    agent_id=agent_id,
-                    limit=max_short_term
-                )
-                result["short_term"] = short_term
+        if not items:
+            return []
             
-            # Get relevant long-term memories if query provided
-            if query and max_long_term > 0:
-                long_term = await self.long_term.search_memory(
-                    agent_id=agent_id,
-                    query=query,
-                    limit=max_long_term
-                )
-                result["long_term"] = long_term
+        # Get lock for this namespace to prevent concurrent batch operations
+        if namespace not in self._memory_locks:
+            self._memory_locks[namespace] = asyncio.Lock()
             
-            # Get current agent state
-            state = await self.short_term.get_agent_state(agent_id)
-            result["state"] = state
+        async with self._memory_locks[namespace]:
+            # Add each item to vector store
+            entries = []
+            ids = []
             
-            return result
-        except Exception as e:
-            logger.error(f"Error getting agent context: {str(e)}")
-            return {"short_term": [], "long_term": [], "state": None}
-    
-    async def store_agent_state(
-        self,
-        agent_id: str,
-        state: Dict[str, Any],
-        ttl: Optional[int] = None,
-    ) -> bool:
-        try:
-            success = await self.short_term.set_agent_state(agent_id, state, ttl)
-            
-            if success:
-                logger.debug(f"Stored state for agent {agent_id}")
-            else:
-                logger.warning(f"Failed to store state for agent {agent_id}")
+            for data, metadata in items:
+                # Add timestamp if not present
+                if "timestamp" not in metadata:
+                    metadata["timestamp"] = datetime.utcnow().isoformat()
+                    
+                # Generate a unique ID if not provided
+                entry_id = metadata.get("id", str(uuid.uuid4()))
+                metadata["id"] = entry_id
+                ids.append(entry_id)
                 
-            return success
-        except Exception as e:
-            logger.error(f"Error storing agent state: {str(e)}")
-            return False
+                # Convert data to text if it's not already
+                if isinstance(data, dict):
+                    text = json.dumps(data)
+                else:
+                    text = str(data)
+                    
+                entries.append((entry_id, text, metadata))
+                
+                # Store in redis for fast lookup if enabled
+                if settings.memory.structured_storage_enabled:
+                    entry = MemoryEntry(
+                        id=entry_id,
+                        data=data,
+                        metadata=metadata,
+                        namespace=namespace,
+                        text=text,
+                        created_at=datetime.utcnow()
+                    )
+                    await self.redis_store.set(f"memory:{namespace}:{entry_id}", entry.model_dump())
             
-    # For compatibility with the old implementation
-    async def save_agent_state(
-        self, agent_id: str, state: Dict[str, Any], ttl: Optional[int] = None
-    ) -> bool:
-        return await self.store_agent_state(agent_id, state, ttl)
-        
-    # For compatibility with the old implementation
-    async def update_agent_state(
-        self, agent_id: str, updates: Dict[str, Any], ttl: Optional[int] = None
-    ) -> bool:
-        # Get current state
-        current_state = await self.short_term.get_agent_state(agent_id)
-        if not current_state:
-            return await self.store_agent_state(agent_id, updates, ttl)
+            # Add all entries to vector store in one batch
+            await self.vector_store.add_batch(entries, namespace)
             
-        # Update state
-        current_state.update(updates)
-        return await self.store_agent_state(agent_id, current_state, ttl)
+            # Ensure namespace is tracked
+            self.available_namespaces.add(namespace)
+            
+            logger.debug(f"Added batch of {len(entries)} memory entries to namespace {namespace}")
+            return ids
+    
+    async def queue_for_batch(self, data: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None, 
+                             namespace: str = "default") -> str:
+        if not metadata:
+            metadata = {}
+            
+        # Generate a unique ID if not provided
+        entry_id = metadata.get("id", str(uuid.uuid4()))
+        metadata["id"] = entry_id
         
-    # For compatibility with the old implementation
-    async def get_agent_state(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        return await self.short_term.get_agent_state(agent_id)
+        # Add timestamp if not present
+        if "timestamp" not in metadata:
+            metadata["timestamp"] = datetime.utcnow().isoformat()
+            
+        # Add to batch queue
+        if namespace not in self._batch_queue:
+            self._batch_queue[namespace] = []
+            
+        self._batch_queue[namespace].append((data, metadata))
+        
+        return entry_id
+    
+    async def _batch_processing_loop(self) -> None:
+        while True:
+            await asyncio.sleep(5)  # Process batches every 5 seconds
+            
+            try:
+                for namespace, items in list(self._batch_queue.items()):
+                    if items:
+                        batch = items.copy()
+                        self._batch_queue[namespace] = []
+                        await self.add_batch(batch, namespace)
+                        logger.debug(f"Processed batch of {len(batch)} items for namespace {namespace}")
+            except Exception as e:
+                logger.error(f"Error in batch processing loop: {str(e)}")
+    
+    async def search(self, query: str, limit: int = 5, namespace: str = "default", 
+                    filters: Optional[Dict[str, Any]] = None, min_score: float = 0.0) -> List[Dict[str, Any]]:
+        if not self.initialized:
+            await self.initialize()
+            
+        start_time = time.time()
+        
+        # First check cache if caching is enabled
+        if settings.memory.caching_enabled:
+            cache_key = hashlib.md5(f"{query}:{namespace}:{limit}:{json.dumps(filters or {})}".encode()).hexdigest()
+            cached_results = await self.redis_store.get(f"search_cache:{cache_key}")
+            
+            if cached_results:
+                logger.debug(f"Cache hit for query '{query}' in namespace {namespace}")
+                return json.loads(cached_results)
+        
+        # Perform search in vector store
+        results = await self.vector_store.search(
+            query=query,
+            limit=limit,
+            namespace=namespace,
+            filters=filters,
+            min_score=min_score
+        )
+        
+        # Process and enhance results
+        enhanced_results = []
+        for result in results:
+            # Try to get full data from Redis if available
+            if settings.memory.structured_storage_enabled:
+                entry_data = await self.redis_store.get(f"memory:{namespace}:{result['id']}")
+                if entry_data:
+                    # Merge with vector search result to include score
+                    entry = json.loads(entry_data)
+                    entry["score"] = result["score"]
+                    enhanced_results.append(entry)
+                else:
+                    enhanced_results.append(result)
+            else:
+                enhanced_results.append(result)
+        
+        # Cache results if caching is enabled
+        if settings.memory.caching_enabled:
+            await self.redis_store.set(
+                f"search_cache:{cache_key}", 
+                json.dumps(enhanced_results),
+                ex=settings.memory.cache_ttl_seconds
+            )
+        
+        search_time = time.time() - start_time
+        logger.debug(f"Search for '{query}' in namespace {namespace} returned {len(enhanced_results)} results in {search_time:.2f}s")
+        
+        return enhanced_results
+    
+    async def get(self, entry_id: str, namespace: str = "default") -> Optional[Dict[str, Any]]:
+        if not self.initialized:
+            await self.initialize()
+            
+        # Try to get from Redis first
+        if settings.memory.structured_storage_enabled:
+            entry_data = await self.redis_store.get(f"memory:{namespace}:{entry_id}")
+            if entry_data:
+                return json.loads(entry_data)
+        
+        # Fall back to vector store
+        result = await self.vector_store.get(entry_id, namespace)
+        if not result:
+            return None
+            
+        return result
+    
+    async def add_conversation(self, agent_id: str, task_id: str, role: str, content: str, 
+                              metadata: Optional[Dict[str, Any]] = None) -> str:
+        if not self.initialized:
+            await self.initialize()
+            
+        if not metadata:
+            metadata = {}
+            
+        namespace = f"conversation:{agent_id}"
+        
+        # Prepare message data
+        message_id = str(uuid.uuid4())
+        timestamp = datetime.utcnow().isoformat()
+        
+        message_data = {
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "role": role,
+            "content": content,
+            "timestamp": timestamp
+        }
+        
+        # Update metadata
+        metadata.update({
+            "id": message_id,
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "role": role,
+            "message_type": "conversation",
+            "timestamp": timestamp
+        })
+        
+        # Add to memory
+        await self.add(message_data, metadata, namespace)
+        
+        # Update in-memory cache for this task
+        task_cache_key = f"{agent_id}:{task_id}"
+        if task_cache_key not in self._task_memory_cache:
+            self._task_memory_cache[task_cache_key] = []
+            
+        self._task_memory_cache[task_cache_key].append({
+            "id": message_id,
+            "role": role,
+            "content": content,
+            "timestamp": timestamp,
+            **metadata
+        })
+        
+        # Trim cache if it exceeds the maximum size
+        if len(self._task_memory_cache[task_cache_key]) > settings.memory.max_short_term_history:
+            self._task_memory_cache[task_cache_key] = self._task_memory_cache[task_cache_key][-settings.memory.max_short_term_history:]
+        
+        return message_id
+    
+    async def get_conversation_history(self, agent_id: str, task_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        if not self.initialized:
+            await self.initialize()
+            
+        # Check in-memory cache first
+        task_cache_key = f"{agent_id}:{task_id}"
+        if task_cache_key in self._task_memory_cache:
+            history = self._task_memory_cache[task_cache_key]
+            return history[-limit:] if limit > 0 else history
+        
+        # Otherwise, search in vector store
+        namespace = f"conversation:{agent_id}"
+        
+        filters = {
+            "task_id": task_id,
+            "message_type": "conversation"
+        }
+        
+        # Use vector search sorted by timestamp
+        results = await self.vector_store.search_by_metadata(
+            filters=filters,
+            namespace=namespace,
+            sort_field="timestamp",
+            sort_order="asc"
+        )
+        
+        # Update cache
+        self._task_memory_cache[task_cache_key] = results
+        
+        return results[-limit:] if limit > 0 else results
+    
+    async def add_task_memory(self, agent_id: str, task_id: str, memory_type: str, 
+                             data: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> str:
+        if not self.initialized:
+            await self.initialize()
+            
+        if not metadata:
+            metadata = {}
+            
+        namespace = f"task_memory:{agent_id}"
+        
+        # Prepare memory data
+        memory_id = str(uuid.uuid4())
+        timestamp = datetime.utcnow().isoformat()
+        
+        # Update metadata
+        metadata.update({
+            "id": memory_id,
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "memory_type": memory_type,
+            "timestamp": timestamp
+        })
+        
+        # Add to memory
+        await self.add(data, metadata, namespace)
+        
+        return memory_id
+    
+    async def get_task_memory(self, agent_id: str, task_id: str, memory_type: Optional[str] = None, 
+                             limit: int = 10) -> List[Dict[str, Any]]:
+        if not self.initialized:
+            await self.initialize()
+            
+        namespace = f"task_memory:{agent_id}"
+        
+        filters = {
+            "agent_id": agent_id,
+            "task_id": task_id
+        }
+        
+        if memory_type:
+            filters["memory_type"] = memory_type
+        
+        # Use vector store search by metadata
+        results = await self.vector_store.search_by_metadata(
+            filters=filters,
+            namespace=namespace,
+            sort_field="timestamp",
+            sort_order="desc"
+        )
+        
+        return results[:limit] if limit > 0 else results
+    
+    async def delete_conversation(self, agent_id: str, task_id: str) -> bool:
+        if not self.initialized:
+            await self.initialize()
+            
+        namespace = f"conversation:{agent_id}"
+        
+        filters = {
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "message_type": "conversation"
+        }
+        
+        # Delete from vector store
+        deleted = await self.vector_store.delete_by_metadata(filters, namespace)
+        
+        # Clear cache
+        task_cache_key = f"{agent_id}:{task_id}"
+        if task_cache_key in self._task_memory_cache:
+            del self._task_memory_cache[task_cache_key]
+            
+        return deleted
+    
+    async def delete_task_memory(self, agent_id: str, task_id: str, memory_type: Optional[str] = None) -> bool:
+        if not self.initialized:
+            await self.initialize()
+            
+        namespace = f"task_memory:{agent_id}"
+        
+        filters = {
+            "agent_id": agent_id,
+            "task_id": task_id
+        }
+        
+        if memory_type:
+            filters["memory_type"] = memory_type
+        
+        # Delete from vector store
+        return await self.vector_store.delete_by_metadata(filters, namespace)
+    
+    async def clear(self, namespace: str = "default") -> bool:
+        if not self.initialized:
+            await self.initialize()
+            
+        # Clear from vector store
+        result = await self.vector_store.clear(namespace)
+        
+        # Clear from redis if structured storage is enabled
+        if settings.memory.structured_storage_enabled:
+            await self.redis_store.delete_by_prefix(f"memory:{namespace}:")
+            
+        # Clear relevant caches
+        if namespace.startswith("conversation:"):
+            agent_id = namespace.split(":", 1)[1]
+            for key in list(self._task_memory_cache.keys()):
+                if key.startswith(f"{agent_id}:"):
+                    del self._task_memory_cache[key]
+                    
+        return result
+    
+    async def clear_all(self) -> bool:
+        if not self.initialized:
+            await self.initialize()
+            
+        # Clear all namespaces in vector store
+        result = True
+        for namespace in self.available_namespaces:
+            ns_result = await self.vector_store.clear(namespace)
+            result = result and ns_result
+            
+        # Clear redis if structured storage is enabled
+        if settings.memory.structured_storage_enabled:
+            await self.redis_store.delete_by_prefix("memory:")
+            
+        # Clear caches
+        self._task_memory_cache.clear()
+        self.available_namespaces.clear()
+        
+        return result
+    
+    async def get_relevant_memories(self, agent_id: str, query: str, limit: int = 5, 
+                                   include_tasks: bool = True, include_conversations: bool = True,
+                                   min_score: float = 0.0) -> List[Dict[str, Any]]:
+        if not self.initialized:
+            await self.initialize()
+            
+        results = []
+        
+        # Search conversations
+        if include_conversations:
+            conversations = await self.search(
+                query=query,
+                limit=limit,
+                namespace=f"conversation:{agent_id}",
+                min_score=min_score
+            )
+            for convo in conversations:
+                convo["source"] = "conversation"
+                results.append(convo)
+                
+        # Search task memories
+        if include_tasks:
+            task_memories = await self.search(
+                query=query,
+                limit=limit,
+                namespace=f"task_memory:{agent_id}",
+                min_score=min_score
+            )
+            for mem in task_memories:
+                mem["source"] = "task_memory"
+                results.append(mem)
+                
+        # Sort by relevance score (descending)
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        
+        return results[:limit]
+    
+    async def get_namespaces(self) -> List[str]:
+        if not self.initialized:
+            await self.initialize()
+            
+        # Get all namespaces from vector store
+        vector_namespaces = await self.vector_store.get_namespaces()
+        
+        # Update our tracking set
+        self.available_namespaces.update(vector_namespaces)
+        
+        return list(self.available_namespaces)
 
 
+# Create singleton instance
 memory_manager = MemoryManager() 

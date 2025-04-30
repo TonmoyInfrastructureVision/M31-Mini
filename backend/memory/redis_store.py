@@ -1,291 +1,336 @@
-import redis.asyncio as redis
+import logging
+from typing import Dict, List, Any, Optional, Set, Union, Tuple
 import json
-from typing import Dict, List, Any, Optional, Union
-import time
+import asyncio
 from datetime import datetime, timedelta
-import uuid
+from pydantic import BaseModel, Field
 
-from ..config.settings import settings
-from ..config.logging_config import get_logger
+import redis.asyncio as redis
+from redis.asyncio.client import Redis
 
-logger = get_logger(__name__)
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
-class RedisMemoryStore:
+class MemoryEntry(BaseModel):
+    id: str
+    data: Dict[str, Any]
+    metadata: Dict[str, Any]
+    namespace: str
+    text: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RedisStore:
     def __init__(
         self,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-        db: Optional[int] = None,
+        host: str = "localhost",
+        port: int = 6379,
         password: Optional[str] = None,
-        ttl: Optional[int] = None,
-    ) -> None:
-        self.host = host or settings.redis.host
-        self.port = port or settings.redis.port
-        self.db = db if db is not None else settings.redis.db
-        self.password = password or settings.redis.password
-        self.ttl = ttl or settings.redis.ttl
-        self.client = None
-    
-    async def connect(self) -> None:
-        if self.client is not None:
-            return
+        db: int = 0,
+        ssl: bool = False,
+        default_ttl: int = 3600,
+    ):
+        self.host = host
+        self.port = port
+        self.password = password
+        self.db = db
+        self.ssl = ssl
+        self.default_ttl = default_ttl
         
-        try:
-            logger.info(f"Connecting to Redis at {self.host}:{self.port}/{self.db}")
+        self.redis: Optional[Redis] = None
+        self.initialized = False
+        self._lock = asyncio.Lock()
+        
+    async def initialize(self) -> None:
+        if self.initialized:
+            return
             
-            self.client = await redis.Redis(
+        try:
+            self.redis = redis.Redis(
                 host=self.host,
                 port=self.port,
-                db=self.db,
                 password=self.password,
-                decode_responses=True,
+                db=self.db,
+                ssl=self.ssl,
+                socket_timeout=settings.redis.socket_timeout,
+                socket_connect_timeout=settings.redis.socket_connect_timeout,
+                retry_on_timeout=True,
+                health_check_interval=30
             )
             
             # Test connection
-            await self.client.ping()
-            logger.info("Connected to Redis successfully")
-        
+            await self.redis.ping()
+            
+            self.initialized = True
+            logger.info(f"Connected to Redis at {self.host}:{self.port}")
         except Exception as e:
             logger.error(f"Error connecting to Redis: {str(e)}")
             raise
-    
+            
     async def close(self) -> None:
-        if self.client:
-            await self.client.close()
-            self.client = None
-            logger.debug("Redis connection closed")
-    
-    def _agent_key(self, agent_id: str) -> str:
-        return f"agent:{agent_id}:cache"
-    
-    def _memory_key(self, memory_id: str) -> str:
-        return f"memory:{memory_id}"
-    
-    def _index_key(self, agent_id: str) -> str:
-        return f"agent:{agent_id}:memories"
-    
-    async def add_memory(
-        self,
-        agent_id: str,
-        text: str,
-        metadata: Optional[Dict[str, Any]] = None,
-        memory_id: Optional[str] = None,
-        ttl: Optional[int] = None,
-    ) -> str:
-        if self.client is None:
-            await self.connect()
+        if self.redis:
+            await self.redis.close()
+            self.redis = None
+            
+        self.initialized = False
+        logger.info("Closed Redis connection")
         
-        memory_id = memory_id or str(uuid.uuid4())
-        timestamp = datetime.now().isoformat()
-        expiry = ttl or self.ttl
-        
-        full_metadata = {
-            "agent_id": agent_id,
-            "timestamp": timestamp,
-            "type": "short_term",
-        }
-        
-        if metadata:
-            full_metadata.update(metadata)
-        
-        memory_data = {
-            "id": memory_id,
-            "text": text,
-            "metadata": full_metadata,
-        }
-        
-        memory_key = self._memory_key(memory_id)
-        index_key = self._index_key(agent_id)
-        
+    async def _ensure_connected(self) -> None:
+        if not self.initialized:
+            await self.initialize()
+            
+        # Check if connection is alive
         try:
-            # Store the memory
-            await self.client.setex(
-                memory_key,
-                expiry,
-                json.dumps(memory_data)
-            )
+            if self.redis:
+                await self.redis.ping()
+        except:
+            # Reconnect
+            self.initialized = False
+            await self.initialize()
             
-            # Add to agent's memory index with score as timestamp
-            score = time.time()
-            await self.client.zadd(index_key, {memory_id: score})
+    async def set(self, key: str, value: Union[str, Dict, bytes], ex: Optional[int] = None) -> bool:
+        await self._ensure_connected()
+        
+        if ex is None:
+            ex = self.default_ttl
             
-            # Set TTL on the index if not already set
-            if not await self.client.ttl(index_key) > 0:
-                await self.client.expire(index_key, expiry)
-            
-            logger.debug(f"Added short-term memory for agent {agent_id}: {memory_id}")
-            return memory_id
-            
+        try:
+            # Convert dict to JSON string
+            if isinstance(value, dict):
+                value = json.dumps(value)
+                
+            await self.redis.set(key, value, ex=ex)
+            return True
         except Exception as e:
-            logger.error(f"Error adding memory to Redis: {str(e)}")
-            raise
-    
-    async def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
-        if self.client is None:
-            await self.connect()
-        
-        memory_key = self._memory_key(memory_id)
+            logger.error(f"Error setting key in Redis: {str(e)}")
+            return False
+            
+    async def get(self, key: str) -> Optional[str]:
+        await self._ensure_connected()
         
         try:
-            data = await self.client.get(memory_key)
-            if not data:
+            value = await self.redis.get(key)
+            
+            if value is None:
                 return None
-            
-            return json.loads(data)
+                
+            return value.decode("utf-8")
         except Exception as e:
-            logger.error(f"Error getting memory from Redis: {str(e)}")
+            logger.error(f"Error getting key from Redis: {str(e)}")
             return None
-    
-    async def get_agent_memories(
-        self,
-        agent_id: str,
-        limit: int = 20,
-        offset: int = 0,
-        sort: str = "desc",
-    ) -> List[Dict[str, Any]]:
-        if self.client is None:
-            await self.connect()
-        
-        index_key = self._index_key(agent_id)
+            
+    async def delete(self, key: str) -> bool:
+        await self._ensure_connected()
         
         try:
-            # Get memory IDs from sorted set, newest first or oldest first
-            if sort.lower() == "desc":
-                # Newest first (highest score to lowest)
-                memory_ids = await self.client.zrevrange(index_key, offset, offset + limit - 1)
-            else:
-                # Oldest first (lowest score to highest)
-                memory_ids = await self.client.zrange(index_key, offset, offset + limit - 1)
-            
-            if not memory_ids:
-                return []
-            
-            # Get memories from their keys
-            memory_keys = [self._memory_key(mid) for mid in memory_ids]
-            memory_data = await self.client.mget(memory_keys)
-            
-            # Parse JSON
-            memories = []
-            for data in memory_data:
-                if data:
-                    try:
-                        memory = json.loads(data)
-                        memories.append(memory)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to decode memory data: {data}")
-            
-            return memories
-            
+            result = await self.redis.delete(key)
+            return result > 0
         except Exception as e:
-            logger.error(f"Error retrieving agent memories from Redis: {str(e)}")
+            logger.error(f"Error deleting key from Redis: {str(e)}")
+            return False
+            
+    async def exists(self, key: str) -> bool:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.exists(key) > 0
+        except Exception as e:
+            logger.error(f"Error checking key existence in Redis: {str(e)}")
+            return False
+            
+    async def expire(self, key: str, seconds: int) -> bool:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.expire(key, seconds)
+        except Exception as e:
+            logger.error(f"Error setting expiry in Redis: {str(e)}")
+            return False
+            
+    async def ttl(self, key: str) -> int:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.ttl(key)
+        except Exception as e:
+            logger.error(f"Error getting TTL from Redis: {str(e)}")
+            return -2  # -2 means key doesn't exist
+            
+    async def keys(self, pattern: str) -> List[str]:
+        await self._ensure_connected()
+        
+        try:
+            keys = await self.redis.keys(pattern)
+            return [key.decode("utf-8") for key in keys]
+        except Exception as e:
+            logger.error(f"Error getting keys from Redis: {str(e)}")
             return []
-    
-    async def update_memory_ttl(self, memory_id: str, ttl: Optional[int] = None) -> bool:
-        if self.client is None:
-            await self.connect()
-        
-        expiry = ttl or self.ttl
-        memory_key = self._memory_key(memory_id)
+            
+    async def delete_by_prefix(self, prefix: str) -> int:
+        await self._ensure_connected()
         
         try:
-            # Check if memory exists
-            exists = await self.client.exists(memory_key)
-            if not exists:
-                return False
+            keys = await self.keys(f"{prefix}*")
             
-            # Update TTL
-            await self.client.expire(memory_key, expiry)
-            logger.debug(f"Updated TTL for memory {memory_id}")
-            return True
-            
+            if not keys:
+                return 0
+                
+            return await self.redis.delete(*keys)
         except Exception as e:
-            logger.error(f"Error updating memory TTL: {str(e)}")
-            return False
-    
-    async def delete_memory(self, memory_id: str) -> bool:
-        if self.client is None:
-            await self.connect()
+            logger.error(f"Error deleting keys by prefix from Redis: {str(e)}")
+            return 0
+            
+    async def scan_iter(self, match: Optional[str] = None, count: int = 10) -> List[str]:
+        await self._ensure_connected()
         
-        memory_key = self._memory_key(memory_id)
-        
+        result = []
         try:
-            # Get the memory to find the agent_id
-            memory_data = await self.get_memory(memory_id)
-            if not memory_data:
-                return False
-            
-            agent_id = memory_data["metadata"]["agent_id"]
-            index_key = self._index_key(agent_id)
-            
-            # Delete memory and remove from index
-            await self.client.delete(memory_key)
-            await self.client.zrem(index_key, memory_id)
-            
-            logger.debug(f"Deleted memory: {memory_id}")
-            return True
-            
+            async for key in self.redis.scan_iter(match=match, count=count):
+                result.append(key.decode("utf-8"))
+            return result
         except Exception as e:
-            logger.error(f"Error deleting memory: {str(e)}")
-            return False
-    
-    async def delete_agent_memories(self, agent_id: str) -> bool:
-        if self.client is None:
-            await self.connect()
-        
-        index_key = self._index_key(agent_id)
+            logger.error(f"Error scanning keys from Redis: {str(e)}")
+            return []
+            
+    async def hset(self, name: str, key: str, value: Union[str, Dict]) -> bool:
+        await self._ensure_connected()
         
         try:
-            # Get all memory IDs for the agent
-            memory_ids = await self.client.zrange(index_key, 0, -1)
-            
-            if memory_ids:
-                # Delete each memory
-                memory_keys = [self._memory_key(mid) for mid in memory_ids]
-                await self.client.delete(*memory_keys)
-            
-            # Delete the index
-            await self.client.delete(index_key)
-            
-            logger.info(f"Deleted all short-term memories for agent: {agent_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error deleting agent memories: {str(e)}")
-            return False
-    
-    async def store_agent_state(
-        self,
-        agent_id: str,
-        state: Dict[str, Any],
-        ttl: Optional[int] = None,
-    ) -> bool:
-        if self.client is None:
-            await self.connect()
-        
-        key = self._agent_key(agent_id)
-        expiry = ttl or self.ttl
-        
-        try:
-            await self.client.setex(key, expiry, json.dumps(state))
-            logger.debug(f"Stored state for agent: {agent_id}")
+            # Convert dict to JSON string
+            if isinstance(value, dict):
+                value = json.dumps(value)
+                
+            await self.redis.hset(name, key, value)
             return True
         except Exception as e:
-            logger.error(f"Error storing agent state: {str(e)}")
+            logger.error(f"Error setting hash key in Redis: {str(e)}")
             return False
-    
-    async def get_agent_state(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        if self.client is None:
-            await self.connect()
-        
-        key = self._agent_key(agent_id)
+            
+    async def hget(self, name: str, key: str) -> Optional[str]:
+        await self._ensure_connected()
         
         try:
-            data = await self.client.get(key)
-            if not data:
+            value = await self.redis.hget(name, key)
+            
+            if value is None:
                 return None
-            
-            return json.loads(data)
+                
+            return value.decode("utf-8")
         except Exception as e:
-            logger.error(f"Error retrieving agent state: {str(e)}")
-            return None 
+            logger.error(f"Error getting hash key from Redis: {str(e)}")
+            return None
+            
+    async def hgetall(self, name: str) -> Dict[str, str]:
+        await self._ensure_connected()
+        
+        try:
+            result = await self.redis.hgetall(name)
+            
+            if not result:
+                return {}
+                
+            return {k.decode("utf-8"): v.decode("utf-8") for k, v in result.items()}
+        except Exception as e:
+            logger.error(f"Error getting all hash keys from Redis: {str(e)}")
+            return {}
+            
+    async def hdel(self, name: str, *keys: str) -> int:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.hdel(name, *keys)
+        except Exception as e:
+            logger.error(f"Error deleting hash key from Redis: {str(e)}")
+            return 0
+            
+    async def sadd(self, name: str, *values: str) -> int:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.sadd(name, *values)
+        except Exception as e:
+            logger.error(f"Error adding to set in Redis: {str(e)}")
+            return 0
+            
+    async def smembers(self, name: str) -> Set[str]:
+        await self._ensure_connected()
+        
+        try:
+            result = await self.redis.smembers(name)
+            return {v.decode("utf-8") for v in result}
+        except Exception as e:
+            logger.error(f"Error getting set members from Redis: {str(e)}")
+            return set()
+            
+    async def srem(self, name: str, *values: str) -> int:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.srem(name, *values)
+        except Exception as e:
+            logger.error(f"Error removing from set in Redis: {str(e)}")
+            return 0
+            
+    async def incr(self, name: str, amount: int = 1) -> int:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.incrby(name, amount)
+        except Exception as e:
+            logger.error(f"Error incrementing key in Redis: {str(e)}")
+            return 0
+            
+    async def pipeline_execute(self, commands: List[Tuple[str, List[Any]]]) -> List[Any]:
+        await self._ensure_connected()
+        
+        try:
+            pipeline = self.redis.pipeline()
+            
+            for cmd, args in commands:
+                method = getattr(pipeline, cmd)
+                method(*args)
+                
+            return await pipeline.execute()
+        except Exception as e:
+            logger.error(f"Error executing pipeline in Redis: {str(e)}")
+            return []
+            
+    async def pubsub_subscribe(self, *channels: str) -> redis.client.PubSub:
+        await self._ensure_connected()
+        
+        try:
+            pubsub = self.redis.pubsub()
+            await pubsub.subscribe(*channels)
+            return pubsub
+        except Exception as e:
+            logger.error(f"Error subscribing to channels in Redis: {str(e)}")
+            raise
+            
+    async def publish(self, channel: str, message: str) -> int:
+        await self._ensure_connected()
+        
+        try:
+            return await self.redis.publish(channel, message)
+        except Exception as e:
+            logger.error(f"Error publishing message in Redis: {str(e)}")
+            return 0
+            
+    async def get_namespaces(self) -> Set[str]:
+        await self._ensure_connected()
+        
+        try:
+            keys = await self.redis.keys("memory:*")
+            namespaces = set()
+            
+            for key in keys:
+                key_str = key.decode("utf-8")
+                parts = key_str.split(":")
+                if len(parts) >= 2:
+                    namespaces.add(parts[1])
+                    
+            return namespaces
+        except Exception as e:
+            logger.error(f"Error getting namespaces from Redis: {str(e)}")
+            return set() 
